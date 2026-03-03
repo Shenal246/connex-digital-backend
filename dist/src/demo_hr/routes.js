@@ -1,0 +1,13 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_1 = require("../common/middlewares/auth");
+const middleware_1 = require("../iam/middleware");
+const controller_1 = require("./controller");
+const middleware_2 = require("../audit/middleware");
+const router = (0, express_1.Router)();
+router.use(auth_1.requireAuth);
+router.get('/manpower-requisitions', (0, middleware_1.requirePermission)('demo_hr', 'manpower_requisition', 'READ'), controller_1.listRequisitions);
+router.post('/manpower-requisitions', (0, middleware_1.requirePermission)('demo_hr', 'manpower_requisition', 'CREATE'), (0, middleware_2.auditAction)('REQUISITION_CREATE', 'ManpowerRequisition'), controller_1.createRequisition);
+router.get('/manpower-requisitions/:id', (0, middleware_1.requirePermission)('demo_hr', 'manpower_requisition', 'READ'), controller_1.getRequisition);
+exports.default = router;

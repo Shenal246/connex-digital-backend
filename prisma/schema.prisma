@@ -1,0 +1,323 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// IAM: Users & Roles
+// -----------------------------------------------------------------------------
+
+model User {
+  id           String  @id @default(uuid())
+  email        String  @unique
+  isActive     Boolean @default(true)
+  passwordHash String?
+  name         String?
+
+  // Security & MFA
+  mfaEnabled             Boolean   @default(false)
+  mfaSecret              String?
+  isInvited              Boolean   @default(false)
+  failedLoginAttempts    Int       @default(0)
+  lockedOutUntil         DateTime?
+  mustChangePassword     Boolean   @default(false)
+  otpSecret              String?
+  otpExpiresAt           DateTime?
+  resetPasswordToken     String?
+  resetPasswordExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roleId        String?
+  role          Role?                 @relation(fields: [roleId], references: [id])
+  requisitions  ManpowerRequisition[]
+  auditLogs     AuditLog[]
+  tasksAssigned ApprovalTask[]        @relation("TaskAssignee")
+  notifications Notification[]
+  articleVotes  HelpArticleVote[]
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions   RolePermission[]
+  users         User[]
+  tasksAssigned ApprovalTask[]   @relation("TaskRole")
+}
+
+// -----------------------------------------------------------------------------
+// IAM: Dynamic Navigation & Security
+// -----------------------------------------------------------------------------
+
+model SystemModule {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  key       String   @unique // e.g. "iam", "hr_operations"
+  icon      String? // Lucide icon name
+  route     String? // e.g. "/admin" (parent route)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resources Resource[]
+}
+
+model Resource {
+  id       String       @id @default(uuid())
+  name     String
+  key      String // e.g. "users", "roles"
+  moduleId String
+  module   SystemModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  permissions Permission[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([moduleId, key])
+}
+
+model Permission {
+  id         String   @id @default(uuid())
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  action     String // e.g. "CREATE", "READ", "UPDATE", "DELETE", "APPROVE"
+  createdAt  DateTime @default(now())
+
+  roles RolePermission[]
+
+  @@unique([resourceId, action])
+}
+
+model RolePermission {
+  id           String @id @default(uuid())
+  roleId       String
+  permissionId String
+  policyJson   Json? // optional field-level/row-level policies
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+// -----------------------------------------------------------------------------
+// Audit Log
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  timestamp  DateTime @default(now())
+  userId     String?
+  action     String
+  entityType String?
+  entityId   String?
+  status     String // SUCCESS/FAIL
+  ip         String?
+  userAgent  String?
+  requestId  String?
+  metadata   Json? // extra details
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType, entityId])
+}
+
+// -----------------------------------------------------------------------------
+// Workflow Engine
+// -----------------------------------------------------------------------------
+
+enum WorkflowStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model WorkflowDefinition {
+  id             String         @id @default(uuid())
+  workflowId     String // Stable ID across versions
+  version        Int
+  status         WorkflowStatus @default(DRAFT)
+  triggerEvent   String // e.g. "ManpowerRequisitionCreated"
+  definitionJson Json // nodes, edges, config
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instances WorkflowInstance[]
+
+  @@unique([workflowId, version])
+}
+
+enum InstanceStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  AMEND_REQUIRED
+  CANCELLED
+  COMPLETED
+}
+
+model WorkflowInstance {
+  id              String         @id @default(uuid())
+  workflowDefId   String
+  triggerEntityId String? // Link to the record that triggered it
+  status          InstanceStatus @default(PENDING)
+  contextJson     Json? // Snapshot of context variables
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  definition WorkflowDefinition @relation(fields: [workflowDefId], references: [id])
+  tasks      ApprovalTask[]
+
+  @@index([triggerEntityId])
+}
+
+enum TaskStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  AMEND_REQUIRED
+  ESCALATED
+  CANCELLED
+}
+
+model ApprovalTask {
+  id               String     @id @default(uuid())
+  instanceId       String
+  stepNodeId       String // References node ID in definitionJson
+  assignedToUserId String? // Assigned to specific user
+  assignedToRoleId String? // OR assigned to role queue
+  status           TaskStatus @default(PENDING)
+  comments         String?
+  slaDueDate       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instance     WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  assignedUser User?            @relation("TaskAssignee", fields: [assignedToUserId], references: [id])
+  assignedRole Role?            @relation("TaskRole", fields: [assignedToRoleId], references: [id])
+}
+
+// -----------------------------------------------------------------------------
+// Demo HR Module
+// -----------------------------------------------------------------------------
+
+enum RequisitionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  AMEND_REQUIRED
+}
+
+model ManpowerRequisition {
+  id                 String            @id @default(uuid())
+  title              String
+  division           String
+  justification      String
+  requestedPositions Int
+  status             RequisitionStatus @default(DRAFT)
+  createdById        String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdBy User @relation(fields: [createdById], references: [id])
+}
+
+// -----------------------------------------------------------------------------
+// Notifications
+// -----------------------------------------------------------------------------
+
+model Notification {
+  id      String  @id @default(uuid())
+  userId  String
+  title   String
+  message String
+  type    String  @default("INFO") // INFO, SUCCESS, WARNING, ERROR, ACTION
+  isRead  Boolean @default(false)
+  linkUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+}
+// -----------------------------------------------------------------------------
+// Help Center
+// -----------------------------------------------------------------------------
+
+model HelpCategory {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  icon        String? // Lucide icon name
+  order       Int      @default(0)
+  isAdminOnly Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  articles HelpArticle[]
+}
+
+model HelpArticle {
+  id          String   @id @default(uuid())
+  title       String
+  slug        String   @unique
+  content     String   @db.Text
+  categoryId  String
+  order       Int      @default(0)
+  isPublished Boolean  @default(false)
+  isAdminOnly Boolean  @default(false)
+  helpfulCount    Int      @default(0)
+  notHelpfulCount Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  votes           HelpArticleVote[]
+
+  category HelpCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([categoryId])
+  @@index([slug])
+}
+
+model FAQ {
+  id        String   @id @default(uuid())
+  question  String
+  answer    String   @db.Text
+  order     Int      @default(0)
+  isAdminOnly Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model HelpArticleVote {
+  id        String   @id @default(uuid())
+  articleId String
+  userId    String
+  isHelpful Boolean
+  createdAt DateTime @default(now())
+
+  article HelpArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, userId])
+}
