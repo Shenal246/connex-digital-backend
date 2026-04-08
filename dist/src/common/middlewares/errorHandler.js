@@ -18,12 +18,26 @@ class AppError extends Error {
 exports.AppError = AppError;
 const errorHandler = (err, req, res, next) => {
     if (err instanceof zod_1.ZodError) {
+        const firstIssue = err.issues[0];
+        const message = firstIssue ? `${firstIssue.path.join('.')}: ${firstIssue.message}` : 'Invalid request data';
         res.status(400).json({
             success: false,
             error: {
                 code: 'VALIDATION_ERROR',
-                message: 'Invalid request data',
+                message,
                 details: err.issues,
+            },
+        });
+        return;
+    }
+    // Handle Prisma Specific Errors
+    if (err.code === 'P2002') {
+        const target = err.meta?.target || [];
+        res.status(409).json({
+            success: false,
+            error: {
+                code: 'CONFLICT_ERROR',
+                message: `Record already exists with this ${target.join(', ')}`,
             },
         });
         return;

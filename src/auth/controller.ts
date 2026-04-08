@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authService } from './service';
 import { env } from '../common/config/env';
 import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import { prisma } from '../common/utils/db';
 import { logger } from '../common/utils/logger';
 
@@ -78,6 +79,13 @@ export const logoutController = async (req: Request, res: Response, next: NextFu
             try {
                 const decoded = jwt.verify(token, env.JWT_REFRESH_SECRET) as { userId: string };
                 if (decoded && decoded.userId) {
+                    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+                    // Revoke refresh token in DB
+                    await prisma.refreshToken.delete({ where: { tokenHash } }).catch(() => {
+                        // Silently ignore — token may not be in DB if already rotated
+                    });
+
                     await prisma.auditLog.create({
                         data: {
                             userId: decoded.userId,
@@ -93,7 +101,7 @@ export const logoutController = async (req: Request, res: Response, next: NextFu
             }
         }
         res.clearCookie('refreshToken');
-        res.status(200).json({ success: true, data: { message: 'Logged out successfully' } });
+        res.status(200).json({ status: 'success', data: { message: 'Logged out successfully' } });
     } catch (error) {
         next(error);
     }

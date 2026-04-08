@@ -27,6 +27,7 @@ const createUserSchema = z.object({
         .transform(v => v === '' ? undefined : v),
     name: z.string().optional().transform(v => v === '' ? undefined : v),
     roleId: z.string().optional().transform(v => v === '' ? undefined : v),
+    employeeId: z.string().optional().transform(v => v === '' ? undefined : v),
     isActive: z.boolean().optional(),
 });
 
@@ -34,6 +35,7 @@ const updateUserSchema = z.object({
     email: z.string().email().optional(),
     name: z.string().optional().transform(v => v === '' ? undefined : v),
     roleId: z.string().optional().transform(v => v === '' ? undefined : v),
+    employeeId: z.string().optional().transform(v => v === '' ? undefined : v),
     isActive: z.boolean().optional(),
 });
 
@@ -55,6 +57,12 @@ const registerResourceSchema = z.object({
     key: z.string().min(2),
 });
 
+const updateResourceSchema = z.object({
+    name: z.string().min(2).optional(),
+    key: z.string().min(2).optional(),
+    moduleKey: z.string().optional(),
+});
+
 const registerPermissionSchema = z.object({
     moduleKey: z.string(),
     resourceKey: z.string(),
@@ -65,13 +73,31 @@ const registerPermissionSchema = z.object({
 export const getRoles = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const roles = await prisma.role.findMany({
-            include: {
+            select: {
+                id: true,
+                name: true,
+                description: true,
+                isSystem: true,
+                createdAt: true,
                 permissions: {
-                    include: {
+                    select: {
                         permission: {
-                            include: {
+                            select: {
+                                id: true,
+                                action: true,
                                 resource: {
-                                    include: { module: true }
+                                    select: {
+                                        id: true,
+                                        name: true,
+                                        key: true,
+                                        module: {
+                                            select: {
+                                                id: true,
+                                                name: true,
+                                                key: true
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -163,7 +189,19 @@ export const updateRolePermissions = async (req: Request, res: Response, next: N
 export const getUsers = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const users = await prisma.user.findMany({
-            include: { role: true },
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                isActive: true,
+                mfaEnabled: true,
+                mustChangePassword: true,
+                createdAt: true,
+                roleId: true,
+                role: { select: { id: true, name: true } },
+                employeeId: true,
+                employee: { select: { id: true, firstName: true, lastName: true, employeeId: true } },
+            },
             orderBy: { createdAt: 'desc' },
         });
         res.json({ success: true, data: users });
@@ -174,7 +212,7 @@ export const getUsers = async (req: Request, res: Response, next: NextFunction) 
 
 export const createUser = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { email, password, name, roleId, isActive } = createUserSchema.parse(req.body);
+        const { email, password, name, roleId, isActive, employeeId } = createUserSchema.parse(req.body);
 
         let finalPassword = password;
         let mustChangePassword = false;
@@ -187,16 +225,28 @@ export const createUser = async (req: Request, res: Response, next: NextFunction
 
         const passwordHash = await argon2.hash(finalPassword);
 
-        const user = await prisma.user.create({
-            data: {
-                email,
-                name,
-                passwordHash,
-                roleId,
-                mustChangePassword,
-                isActive: isActive !== undefined ? isActive : true,
-            } as any,
-            include: { role: true },
+        const user = await prisma.$transaction(async (tx) => {
+            const newUser = await tx.user.create({
+                data: {
+                    email,
+                    name,
+                    passwordHash,
+                    roleId,
+                    mustChangePassword,
+                    isActive: isActive !== undefined ? isActive : true,
+                    employeeId: employeeId || null,
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    name: true,
+                    isActive: true,
+                    role: { select: { id: true, name: true } },
+                    employee: { select: { id: true, firstName: true, lastName: true, employeeId: true } },
+                },
+            });
+
+            return newUser;
         });
 
         if (mustChangePassword) {
@@ -212,17 +262,29 @@ export const createUser = async (req: Request, res: Response, next: NextFunction
 export const updateUser = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { id } = req.params;
-        const { email, name, roleId, isActive } = updateUserSchema.parse(req.body);
+        const { email, name, roleId, isActive, employeeId } = updateUserSchema.parse(req.body);
 
-        const user = await prisma.user.update({
-            where: { id: id as string },
-            data: {
-                email,
-                name,
-                roleId,
-                isActive,
-            } as any,
-            include: { role: true },
+        const user = await prisma.$transaction(async (tx) => {
+            const updatedUser = await tx.user.update({
+                where: { id: id as string },
+                data: {
+                    email,
+                    name,
+                    roleId,
+                    isActive,
+                    employeeId: employeeId !== undefined ? (employeeId || null) : undefined,
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    name: true,
+                    isActive: true,
+                    role: { select: { id: true, name: true } },
+                    employee: { select: { id: true, firstName: true, lastName: true, employeeId: true } },
+                },
+            });
+
+            return updatedUser;
         });
 
         res.json({ success: true, data: user });
@@ -317,6 +379,32 @@ export const registerResource = async (req: Request, res: Response, next: NextFu
             create: { moduleId: module.id, name: data.name, key: data.key },
         });
         res.status(201).json({ success: true, data: resource });
+    } catch (err) {
+        next(err);
+    }
+};
+
+export const updateResource = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = req.params;
+        const data = updateResourceSchema.parse(req.body);
+
+        let moduleId: string | undefined;
+        if (data.moduleKey) {
+            const module = await prisma.systemModule.findUnique({ where: { key: data.moduleKey } });
+            if (!module) return res.status(404).json({ success: false, error: 'Module not found' });
+            moduleId = module.id;
+        }
+
+        const resource = await prisma.resource.update({
+            where: { id: id as string },
+            data: {
+                name: data.name,
+                key: data.key,
+                moduleId: moduleId,
+            },
+        });
+        res.json({ success: true, data: resource });
     } catch (err) {
         next(err);
     }
@@ -476,13 +564,15 @@ export const adminResetPassword = async (req: Request, res: Response, next: Next
         const user = await prisma.user.findUnique({ where: { id: id as string } });
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
+        // Generate raw token for the email link, store only the SHA-256 hash in the DB
         const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
         const resetPasswordExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
 
         await prisma.user.update({
             where: { id: user.id },
             data: {
-                resetPasswordToken: resetToken,
+                resetPasswordToken: resetTokenHash,
                 resetPasswordExpiresAt,
             } as any
         });

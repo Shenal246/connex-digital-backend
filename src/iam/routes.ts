@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../common/middlewares/auth';
 import { requirePermission } from './middleware';
-import { getRoles, createRole, updateRole, deleteRole, updateRolePermissions, getUsers, createUser, updateUser, deleteUser, getAllPermissions, registerPermission, deletePermission, getEffectivePermissions, getSystemModules, registerSystemModule, updateSystemModule, deleteSystemModule, registerResource, deleteResource, adminResetPassword } from './controller';
+import { getRoles, createRole, updateRole, deleteRole, updateRolePermissions, getUsers, createUser, updateUser, deleteUser, getAllPermissions, registerPermission, deletePermission, getEffectivePermissions, getSystemModules, registerSystemModule, updateSystemModule, deleteSystemModule, registerResource, updateResource, deleteResource, adminResetPassword } from './controller';
 import { auditAction } from '../audit/middleware';
 
 const router = Router();
@@ -24,14 +24,15 @@ router.post('/users/:id/reset-password', requirePermission('iam', 'users', 'UPDA
 router.get('/permissions', requirePermission('iam', 'roles', 'READ'), getAllPermissions);
 router.post('/permissions', requirePermission('iam', 'roles', 'CREATE'), auditAction('PERMISSION_CREATE', 'Permission'), registerPermission);
 router.delete('/permissions/:id', requirePermission('iam', 'roles', 'DELETE'), auditAction('PERMISSION_DELETE', 'Permission'), deletePermission);
-router.get('/users/:userId/permissions', getEffectivePermissions);
+router.get('/users/:userId/permissions', requirePermission('iam', 'users', 'READ'), getEffectivePermissions);
 
-router.get('/modules', getSystemModules);
+router.get('/modules', requirePermission('iam', 'roles', 'READ'), getSystemModules);
 router.post('/modules', requirePermission('iam', 'roles', 'CREATE'), auditAction('MODULE_CREATE', 'Module'), registerSystemModule);
 router.put('/modules/:id', requirePermission('iam', 'roles', 'UPDATE'), auditAction('MODULE_UPDATE', 'Module'), updateSystemModule);
 router.delete('/modules/:id', requirePermission('iam', 'roles', 'DELETE'), auditAction('MODULE_DELETE', 'Module'), deleteSystemModule);
 
 router.post('/resources', requirePermission('iam', 'roles', 'CREATE'), auditAction('RESOURCE_CREATE', 'Resource'), registerResource);
+router.put('/resources/:id', requirePermission('iam', 'roles', 'UPDATE'), auditAction('RESOURCE_UPDATE', 'Resource'), updateResource);
 router.delete('/resources/:id', requirePermission('iam', 'roles', 'DELETE'), auditAction('RESOURCE_DELETE', 'Resource'), deleteResource);
 
 export default router;

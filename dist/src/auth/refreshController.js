@@ -29,7 +29,7 @@ const refreshController = async (req, res, next) => {
         const newTokens = service_1.authService.generateTokens(payload.userId);
         const user = await db_1.prisma.user.findUnique({
             where: { id: payload.userId },
-            select: { id: true, email: true, name: true, roleId: true }
+            select: { id: true, email: true, name: true, roleId: true, mfaEnabled: true }
         });
         if (!user)
             throw new errorHandler_1.AppError(401, 'User no longer exists');
@@ -47,6 +47,7 @@ const refreshController = async (req, res, next) => {
                     id: user.id,
                     email: user.email,
                     name: user.name,
+                    mfaEnabled: user.mfaEnabled,
                 }
             },
         });

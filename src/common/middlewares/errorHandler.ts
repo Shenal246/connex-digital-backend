@@ -6,7 +6,7 @@ export class AppError extends Error {
     constructor(public statusCode: number, public message: string, public details?: any) {
         super(message);
         this.name = 'AppError';
-    }
+    }    
 }
 
 export const errorHandler = (err: Error, req: Request, res: Response, next: NextFunction) => {

@@ -27,12 +27,25 @@ export class AuthService {
         logger.info(`[MOCK EMAIL] To: ${to} | Subject: ${subject} | Body: ${body}`);
     }
 
+    /** SHA-256 hash helper — used for storing tokens in the DB safely */
+    private hashToken(token: string): string {
+        return crypto.createHash('sha256').update(token).digest('hex');
+    }
+
     generateTokens(userId: string) {
         const accessToken = jwt.sign({ userId }, env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRATION });
         const tokenId = crypto.randomUUID();
         const refreshToken = jwt.sign({ userId, tokenId }, env.JWT_REFRESH_SECRET, {
             expiresIn: `${REFRESH_TOKEN_EXPIRATION_DAYS}d`,
         });
+
+        // Persist the hash — allows logout-based revocation and rotation
+        const tokenHash = this.hashToken(refreshToken);
+        const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRATION_DAYS * 24 * 60 * 60 * 1000);
+        prisma.refreshToken.create({
+            data: { tokenHash, userId, expiresAt },
+        }).catch((e) => logger.error(e, '[AUTH] Failed to persist refresh token'));
+
         return { accessToken, refreshToken, tokenId };
     }
 
@@ -200,9 +213,11 @@ export class AuthService {
     }
 
     async resetPassword(token: string, newPassword: string) {
+        // Hash the incoming token before querying — tokens are stored as hashes
+        const tokenHash = this.hashToken(token);
         const user = await prisma.user.findFirst({
             where: {
-                resetPasswordToken: token,
+                resetPasswordToken: tokenHash,
                 resetPasswordExpiresAt: {
                     gt: new Date()
                 }
@@ -235,13 +250,15 @@ export class AuthService {
             return;
         }
 
+        // Generate a raw token for the email link, store only the SHA-256 hash in the DB
         const resetToken = crypto.randomBytes(32).toString('hex');
         const resetPasswordExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+        const resetTokenHash = this.hashToken(resetToken);
 
         await prisma.user.update({
             where: { id: user.id },
             data: {
-                resetPasswordToken: resetToken,
+                resetPasswordToken: resetTokenHash,
                 resetPasswordExpiresAt,
             } as any
         });

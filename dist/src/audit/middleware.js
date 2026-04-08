@@ -3,8 +3,32 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.auditAction = void 0;
 const db_1 = require("../common/utils/db");
 const logger_1 = require("../common/utils/logger");
+const SENSITIVE_FIELDS = ['password', 'token', 'accessToken', 'refreshToken', 'otp', 'secret'];
+const redactData = (data) => {
+    if (!data || typeof data !== 'object')
+        return data;
+    if (Array.isArray(data)) {
+        return data.map(redactData);
+    }
+    const redacted = { ...data };
+    for (const key in redacted) {
+        if (SENSITIVE_FIELDS.includes(key.toLowerCase())) {
+            redacted[key] = '[REDACTED]';
+        }
+        else if (typeof redacted[key] === 'object') {
+            redacted[key] = redactData(redacted[key]);
+        }
+    }
+    return redacted;
+};
 const auditAction = (action, entityType) => {
     return async (req, res, next) => {
+        // Capture request data before the response is finished
+        const requestData = {
+            body: redactData(req.body),
+            params: redactData(req.params),
+            query: redactData(req.query),
+        };
         // We hook into res.on('finish') to log after the request is processed
         res.on('finish', async () => {
             const status = res.statusCode >= 200 && res.statusCode < 400 ? 'SUCCESS' : 'FAIL';
@@ -28,6 +52,7 @@ const auditAction = (action, entityType) => {
                             method: req.method,
                             path: req.originalUrl,
                             statusCode: res.statusCode,
+                            request: requestData,
                         },
                     },
                 });

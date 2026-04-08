@@ -44,6 +44,12 @@ const env_1 = require("../common/config/env");
 const errorHandler_1 = require("../common/middlewares/errorHandler");
 const logger_1 = require("../common/utils/logger");
 const node_crypto_1 = __importDefault(require("node:crypto"));
+const emailService_1 = require("../common/utils/emailService");
+const otplib_1 = require("otplib");
+const totp = new otplib_1.TOTP({
+    crypto: new otplib_1.NobleCryptoPlugin(),
+    base32: new otplib_1.ScureBase32Plugin()
+});
 const ACCESS_TOKEN_EXPIRATION = '15m'; // Short-lived access token
 const REFRESH_TOKEN_EXPIRATION_DAYS = 7;
 class AuthService {
@@ -74,6 +80,9 @@ class AuthService {
         if (user.lockedOutUntil && user.lockedOutUntil > new Date()) {
             throw new errorHandler_1.AppError(403, 'Account is temporarily locked due to multiple failed login attempts.');
         }
+        if (!user.isActive) {
+            throw new errorHandler_1.AppError(403, 'Your account has been disabled. Please contact an administrator.');
+        }
         if (user.isInvited && !user.passwordHash) {
             throw new errorHandler_1.AppError(403, 'Account not fully set up. Please use the invite link sent to your email.');
         }
@@ -84,8 +93,8 @@ class AuthService {
         if (!isValid) {
             const attempts = user.failedLoginAttempts + 1;
             const updates = { failedLoginAttempts: attempts };
-            if (attempts >= 5) {
-                updates.lockedOutUntil = new Date(Date.now() + 15 * 60 * 1000);
+            if (attempts >= 3) {
+                updates.lockedOutUntil = new Date(Date.now() + 30 * 1000);
             }
             await db_1.prisma.user.update({ where: { id: user.id }, data: updates }).catch((e) => logger_1.logger.error(e, '[AUTH] Failed to update failed attempts'));
             // Non-blocking audit log
@@ -107,7 +116,13 @@ class AuthService {
                 tempToken,
             };
         }
-        // Generate OTP
+        if (user.mfaEnabled && user.mfaSecret) {
+            return {
+                requireMfa: true,
+                tempToken,
+            };
+        }
+        // Default or legacy behavior: Email OTP
         const otp = node_crypto_1.default.randomInt(100000, 999999).toString();
         const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 mins
         await db_1.prisma.user.update({
@@ -118,9 +133,7 @@ class AuthService {
             }
         });
         // Dispatch OTP Email
-        Promise.resolve().then(() => __importStar(require('../common/utils/emailService'))).then(({ emailService }) => {
-            emailService.sendOtpEmail(user.email, otp);
-        }).catch(console.error);
+        emailService_1.emailService.sendOtpEmail(user.email, otp).catch(err => logger_1.logger.error(err, 'Failed to send OTP email'));
         return {
             requireOtp: true,
             tempToken,
@@ -128,18 +141,49 @@ class AuthService {
     }
     async verifyOtp(userId, otp, ip, userAgent) {
         const user = await db_1.prisma.user.findUnique({ where: { id: userId } });
-        if (!user || user.otpSecret !== otp || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
-            throw new errorHandler_1.AppError(401, 'Invalid or expired OTP');
+        if (!user) {
+            throw new errorHandler_1.AppError(401, 'User not found');
         }
-        // Clear OTP
-        await db_1.prisma.user.update({
-            where: { id: user.id },
-            data: { otpSecret: null, otpExpiresAt: null },
-        });
+        let isValid = false;
+        if (user.mfaEnabled && user.mfaSecret) {
+            const result = await totp.verify(otp, { secret: user.mfaSecret });
+            isValid = result.valid === true;
+        }
+        else if (user.otpSecret === otp && user.otpExpiresAt && user.otpExpiresAt > new Date()) {
+            // Email OTP Verification
+            isValid = true;
+        }
+        if (!isValid) {
+            const attempts = user.failedLoginAttempts + 1;
+            if (attempts >= 3) {
+                // Invalidate the session/OTP after 3 failed attempts
+                await db_1.prisma.user.update({
+                    where: { id: user.id },
+                    data: {
+                        otpSecret: null,
+                        otpExpiresAt: null,
+                        failedLoginAttempts: 0 // Reset for next login
+                    }
+                }).catch((e) => logger_1.logger.error(e, '[AUTH] Failed to invalidate OTP session'));
+                throw new errorHandler_1.AppError(401, 'Too many failed attempts. Please login again.');
+            }
+            await db_1.prisma.user.update({
+                where: { id: user.id },
+                data: { failedLoginAttempts: attempts }
+            }).catch((e) => logger_1.logger.error(e, '[AUTH] Failed to update failed OTP attempts'));
+            throw new errorHandler_1.AppError(401, `Invalid or expired code. ${3 - attempts} attempts remaining.`);
+        }
+        // Clear OTP if it was an email OTP
+        if (!user.mfaEnabled) {
+            await db_1.prisma.user.update({
+                where: { id: user.id },
+                data: { otpSecret: null, otpExpiresAt: null },
+            });
+        }
         const tokens = this.generateTokens(user.id);
         db_1.prisma.auditLog.create({
-            data: { userId: user.id, action: 'LOGIN_SUCCESS_OTP', status: 'SUCCESS', ip, userAgent },
-        }).catch((e) => logger_1.logger.error(e, '[AUTH] Failed to write audit log LOGIN_SUCCESS_OTP'));
+            data: { userId: user.id, action: user.mfaEnabled ? 'LOGIN_SUCCESS_MFA' : 'LOGIN_SUCCESS_OTP', status: 'SUCCESS', ip, userAgent },
+        }).catch((e) => logger_1.logger.error(e, '[AUTH] Failed to write audit log LOGIN_SUCCESS'));
         return { user, tokens };
     }
     async changePassword(userId, newPassword) {
@@ -197,9 +241,7 @@ class AuthService {
             }
         });
         const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/reset-password?token=${resetToken}`;
-        Promise.resolve().then(() => __importStar(require('../common/utils/emailService'))).then(({ emailService }) => {
-            emailService.sendPasswordResetEmail(user.email, resetLink);
-        }).catch(console.error);
+        emailService_1.emailService.sendPasswordResetEmail(user.email, resetLink).catch(err => logger_1.logger.error(err, 'Failed to send reset email'));
     }
 }
 exports.AuthService = AuthService;

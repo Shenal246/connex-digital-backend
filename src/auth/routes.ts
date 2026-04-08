@@ -17,7 +17,7 @@ router.post('/logout', logoutController);
 router.post('/refresh', refreshController);
 router.post('/verify-otp', verifyOtpController);
 router.post('/change-password', auditAction('AUTH_PASSWORD_CHANGE', 'Auth'), changePasswordController);
-router.post('/forgot-password', auditAction('AUTH_PASSWORD_FORGOT', 'Auth'), forgotPasswordController);
-router.post('/reset-password', auditAction('AUTH_PASSWORD_RESET', 'Auth'), resetPasswordController);
+router.post('/forgot-password', authLimiter, auditAction('AUTH_PASSWORD_FORGOT', 'Auth'), forgotPasswordController);
+router.post('/reset-password', authLimiter, auditAction('AUTH_PASSWORD_RESET', 'Auth'), resetPasswordController);
 
 export default router;

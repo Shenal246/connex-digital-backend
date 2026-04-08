@@ -35,7 +35,7 @@ const loginController = async (req, res, next) => {
         const ip = req.ip || req.socket.remoteAddress;
         const userAgent = req.headers['user-agent'];
         const result = await service_1.authService.login(email, password, ip, userAgent);
-        if ('requirePasswordChange' in result || 'requireOtp' in result) {
+        if ('requirePasswordChange' in result || 'requireOtp' in result || 'requireMfa' in result) {
             return res.status(200).json({
                 success: true,
                 data: result,
@@ -56,6 +56,7 @@ const loginController = async (req, res, next) => {
                     id: user.id,
                     email: user.email,
                     name: user.name,
+                    mfaEnabled: user.mfaEnabled,
                 },
             },
         });
@@ -114,7 +115,12 @@ const verifyOtpController = async (req, res, next) => {
             success: true,
             data: {
                 accessToken: tokens.accessToken,
-                user: { id: user.id, email: user.email, name: user.name },
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    name: user.name,
+                    mfaEnabled: user.mfaEnabled,
+                },
             },
         });
     }
@@ -140,7 +146,12 @@ const changePasswordController = async (req, res, next) => {
             success: true,
             data: {
                 accessToken: tokens.accessToken,
-                user: { id: user.id, email: user.email, name: user.name },
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    name: user.name,
+                    mfaEnabled: user.mfaEnabled,
+                },
             },
         });
     }
@@ -163,7 +174,12 @@ const resetPasswordController = async (req, res, next) => {
             success: true,
             data: {
                 accessToken: tokens.accessToken,
-                user: { id: user.id, email: user.email, name: user.name },
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    name: user.name,
+                    mfaEnabled: user.mfaEnabled,
+                },
             },
         });
     }

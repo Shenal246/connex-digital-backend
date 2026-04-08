@@ -16,10 +16,11 @@ const errorHandler_1 = require("./common/middlewares/errorHandler");
 const routes_1 = __importDefault(require("./auth/routes"));
 const routes_2 = __importDefault(require("./iam/routes"));
 const routes_3 = __importDefault(require("./audit/routes"));
-const routes_4 = __importDefault(require("./workflow/routes"));
-const routes_5 = __importDefault(require("./demo_hr/routes"));
-const routes_6 = __importDefault(require("./notifications/routes"));
-const routes_7 = __importDefault(require("./logs/routes"));
+const routes_4 = __importDefault(require("./notifications/routes"));
+const routes_5 = __importDefault(require("./logs/routes"));
+const routes_6 = __importDefault(require("./settings/routes"));
+const routes_7 = __importDefault(require("./help/routes"));
+const routes_8 = __importDefault(require("./hr/routes"));
 const app = (0, express_1.default)();
 // Security Middlewares
 app.use((0, helmet_1.default)());
@@ -45,10 +46,11 @@ const apiRouter = express_1.default.Router();
 apiRouter.use('/auth', routes_1.default);
 apiRouter.use('/iam', routes_2.default);
 apiRouter.use('/audit', routes_3.default);
-apiRouter.use('/workflow', routes_4.default);
-apiRouter.use('/hr', routes_5.default);
-apiRouter.use('/notifications', routes_6.default);
-apiRouter.use('/logs', routes_7.default);
+apiRouter.use('/hr', routes_8.default);
+apiRouter.use('/notifications', routes_4.default);
+apiRouter.use('/logs', routes_5.default);
+apiRouter.use('/settings', routes_6.default);
+apiRouter.use('/help', routes_7.default);
 app.use('/api', apiRouter);
 // Health Check
 app.get('/health', (req, res) => {

@@ -35,11 +35,12 @@ model User {
 
   roleId        String?
   role          Role?                 @relation(fields: [roleId], references: [id])
-  requisitions  ManpowerRequisition[]
+  employeeId    String?               @unique
+  employee      Employee?             @relation(fields: [employeeId], references: [id], onDelete: SetNull)
   auditLogs     AuditLog[]
-  tasksAssigned ApprovalTask[]        @relation("TaskAssignee")
   notifications Notification[]
   articleVotes  HelpArticleVote[]
+  refreshTokens RefreshToken[]
 }
 
 model Role {
@@ -53,7 +54,19 @@ model Role {
 
   permissions   RolePermission[]
   users         User[]
-  tasksAssigned ApprovalTask[]   @relation("TaskRole")
+}
+
+// Stored refresh token hashes for revocation support
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique   // SHA-256 hash of the raw refresh JWT
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 // -----------------------------------------------------------------------------
@@ -136,108 +149,162 @@ model AuditLog {
 }
 
 // -----------------------------------------------------------------------------
-// Workflow Engine
+// HR: Organization Setup
 // -----------------------------------------------------------------------------
 
-enum WorkflowStatus {
-  DRAFT
-  PUBLISHED
-  ARCHIVED
-}
+model Department {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  parentDeptId String?
+  managerId   String? // User ID or Employee ID
 
-model WorkflowDefinition {
-  id             String         @id @default(uuid())
-  workflowId     String // Stable ID across versions
-  version        Int
-  status         WorkflowStatus @default(DRAFT)
-  triggerEvent   String // e.g. "ManpowerRequisitionCreated"
-  definitionJson Json // nodes, edges, config
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  instances WorkflowInstance[]
-
-  @@unique([workflowId, version])
-}
-
-enum InstanceStatus {
-  PENDING
-  APPROVED
-  REJECTED
-  AMEND_REQUIRED
-  CANCELLED
-  COMPLETED
-}
-
-model WorkflowInstance {
-  id              String         @id @default(uuid())
-  workflowDefId   String
-  triggerEntityId String? // Link to the record that triggered it
-  status          InstanceStatus @default(PENDING)
-  contextJson     Json? // Snapshot of context variables
+  parentDept  Department?  @relation("SubDepartments", fields: [parentDeptId], references: [id])
+  subDepts    Department[] @relation("SubDepartments")
+  
+  designations Designation[]
+  employees    Employee[]
+  
+  history      EmploymentHistory[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  definition WorkflowDefinition @relation(fields: [workflowDefId], references: [id])
-  tasks      ApprovalTask[]
-
-  @@index([triggerEntityId])
 }
 
-enum TaskStatus {
-  PENDING
-  APPROVED
-  REJECTED
-  AMEND_REQUIRED
-  ESCALATED
-  CANCELLED
-}
-
-model ApprovalTask {
-  id               String     @id @default(uuid())
-  instanceId       String
-  stepNodeId       String // References node ID in definitionJson
-  assignedToUserId String? // Assigned to specific user
-  assignedToRoleId String? // OR assigned to role queue
-  status           TaskStatus @default(PENDING)
-  comments         String?
-  slaDueDate       DateTime?
+model Designation {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  departmentId String?
+  
+  department   Department? @relation(fields: [departmentId], references: [id])
+  employees    Employee[]
+  history      EmploymentHistory[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  instance     WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
-  assignedUser User?            @relation("TaskAssignee", fields: [assignedToUserId], references: [id])
-  assignedRole Role?            @relation("TaskRole", fields: [assignedToRoleId], references: [id])
 }
 
 // -----------------------------------------------------------------------------
-// Demo HR Module
+// HR: Employee Core
 // -----------------------------------------------------------------------------
 
-enum RequisitionStatus {
-  DRAFT
-  PENDING_APPROVAL
-  APPROVED
-  REJECTED
-  AMEND_REQUIRED
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+  ON_LEAVE
+  TERMINATED
+  PROBATION
 }
 
-model ManpowerRequisition {
-  id                 String            @id @default(uuid())
-  title              String
-  division           String
-  justification      String
-  requestedPositions Int
-  status             RequisitionStatus @default(DRAFT)
-  createdById        String
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+model Employee {
+  id           String         @id @default(uuid())
+  employeeId   String         @unique // Custom business ID
+  user         User?
+  // Personal Info
+  firstName    String
+  lastName     String
+  middleName   String?
+  displayName  String?
+  gender       Gender
+  dateOfBirth  DateTime
+  maritalStatus String?
+  bloodGroup   String?
+  
+  // Employment Info
+  status       EmployeeStatus @default(PROBATION)
+  joinDate     DateTime
+  exitDate     DateTime?
+  
+  departmentId  String
+  designationId String
+  
+  department    Department  @relation(fields: [departmentId], references: [id])
+  designation   Designation @relation(fields: [designationId], references: [id])
+
+  // Reporting Structure
+  reportsToId   String?
+  reportsTo     Employee?   @relation("EmployeeHierarchy", fields: [reportsToId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  directReports Employee[]  @relation("EmployeeHierarchy")
+  
+  // Relationships
+  addresses         EmployeeAddress[]
+  bankDetails       EmployeeBankDetails?
+  emergencyContacts EmployeeEmergencyContact[]
+  history           EmploymentHistory[]
+  documents         EmployeeDocument[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
 
-  createdBy User @relation(fields: [createdById], references: [id])
+model EmployeeAddress {
+  id          String   @id @default(uuid())
+  employeeId  String
+  type        String   @default("CURRENT") // CURRENT, PERMANENT, OFFICE
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String?
+  zipCode      String?
+  country      String   @default("Sri Lanka")
+
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model EmployeeBankDetails {
+  id            String   @id @default(uuid())
+  employeeId    String   @unique
+  accountName   String
+  accountNumber String
+  bankName      String
+  branchName    String?
+  swiftCode     String?
+
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model EmployeeEmergencyContact {
+  id           String   @id @default(uuid())
+  employeeId   String
+  name         String
+  relationship String
+  phoneNumber  String
+
+  employee     Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model EmploymentHistory {
+  id            String   @id @default(uuid())
+  employeeId    String
+  departmentId  String
+  designationId String
+  startDate     DateTime
+  endDate       DateTime?
+  salary        Decimal?  @db.Decimal(10, 2)
+  changeReason  String?   // PROMOTION, TRANSFER, SALARY_REVISION
+
+  employee      Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  department    Department  @relation(fields: [departmentId], references: [id])
+  designation   Designation @relation(fields: [designationId], references: [id])
+}
+
+model EmployeeDocument {
+  id           String   @id @default(uuid())
+  employeeId   String
+  title        String
+  documentType String   // NIC, PASSPORT, CONTRACT, CERTIFICATE
+  fileUrl      String
+  fileSize     Int?
+  uploadedAt   DateTime @default(now())
+
+  employee     Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 }
 
 // -----------------------------------------------------------------------------

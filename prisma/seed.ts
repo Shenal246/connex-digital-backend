@@ -31,7 +31,6 @@ async function main() {
     const modules = [
         { name: 'Security & IAM', key: 'iam', icon: 'Shield', order: 100, route: '/admin' },
         { name: 'HR Operations', key: 'hr_ops', icon: 'Users', order: 200, route: '/hr' },
-        { name: 'Workflow Engine', key: 'workflows', icon: 'GitBranch', order: 300, route: '/workflows' },
         { name: 'Audit & Compliance', key: 'audit', icon: 'Activity', order: 400, route: '/admin/audit' },
     ];
 
@@ -49,7 +48,6 @@ async function main() {
 
     // ── 3. RESOURCES + PERMISSIONS ───────────────────────────────────────────
     const crudActions = ['CREATE', 'READ', 'UPDATE', 'DELETE'];
-    const allActions = ['CREATE', 'READ', 'UPDATE', 'DELETE', 'APPROVE'];
 
     const resourceDefs: { moduleKey: string; name: string; key: string; actions: string[] }[] = [
         // IAM
@@ -57,10 +55,9 @@ async function main() {
         { moduleKey: 'iam', name: 'Roles & Permissions', key: 'roles', actions: crudActions },
         // HR Ops
         { moduleKey: 'hr_ops', name: 'Employees', key: 'employees', actions: crudActions },
-        { moduleKey: 'hr_ops', name: 'Manpower Requisitions', key: 'requisitions', actions: allActions },
-        // Workflow Engine
-        { moduleKey: 'workflows', name: 'Workflow Definitions', key: 'workflow_definition', actions: ['CREATE', 'READ', 'UPDATE', 'DELETE'] },
-        { moduleKey: 'workflows', name: 'Approval Inbox', key: 'approval_task', actions: ['READ', 'APPROVE'] },
+        { moduleKey: 'hr_ops', name: 'Organization Structure', key: 'org', actions: crudActions },
+        { moduleKey: 'hr_ops', name: 'Company Tree', key: 'tree', actions: ['READ'] },
+        { moduleKey: 'hr_ops', name: 'Manpower Requisitions', key: 'requisitions', actions: crudActions },
         // Audit
         { moduleKey: 'audit', name: 'Audit Logs', key: 'audit_logs', actions: ['READ'] },
     ];
@@ -106,49 +103,127 @@ async function main() {
                 });
             }
 
-            // HR Manager gets Workflow inbox READ + APPROVE
-            if (resDef.moduleKey === 'workflows' && resDef.key === 'approval_task') {
-                await prisma.rolePermission.upsert({
-                    where: { roleId_permissionId: { roleId: hrManagerRole.id, permissionId: perm.id } },
-                    update: {},
-                    create: { roleId: hrManagerRole.id, permissionId: perm.id },
-                });
-            }
         }
     }
 
     console.log('✅ Resources & permissions seeded');
 
-    // ── 4. USERS ─────────────────────────────────────────────────────────────
+    // ── 4. HR INITIAL DATA ──────────────────────────────────────────────────
+    console.log('🏢 Seeding initial HR data...');
+    const itDept = await prisma.department.upsert({
+        where: { id: 'seed-dept-it' },
+        update: {},
+        create: { id: 'seed-dept-it', name: 'Information Technology', description: 'Core IT and Infrastructure' },
+    });
+
+    const hrDept = await prisma.department.upsert({
+        where: { id: 'seed-dept-hr' },
+        update: {},
+        create: { id: 'seed-dept-hr', name: 'Human Resources', description: 'HR and People Operations' },
+    });
+
+    await prisma.designation.upsert({
+        where: { id: 'seed-desig-se' },
+        update: {},
+        create: { id: 'seed-desig-se', name: 'Software Engineer', departmentId: itDept.id },
+    });
+
+    await prisma.designation.upsert({
+        where: { id: 'seed-desig-hrm' },
+        update: {},
+        create: { id: 'seed-desig-hrm', name: 'HR Manager', departmentId: hrDept.id },
+    });
+
+    console.log('👥 Seeding employee hierarchy...');
+    const ceo = await prisma.employee.upsert({
+        where: { employeeId: 'EMP-001' },
+        update: {},
+        create: {
+            employeeId: 'EMP-001',
+            firstName: 'Sarah',
+            lastName: 'Chief',
+            gender: 'FEMALE',
+            dateOfBirth: new Date('1980-01-01'),
+            joinDate: new Date('2020-01-01'),
+            status: 'ACTIVE',
+            department: { connect: { id: hrDept.id } },
+            designation: { connect: { id: 'seed-desig-hrm' } },
+        }
+    });
+
+    const cto = await prisma.employee.upsert({
+        where: { employeeId: 'EMP-002' },
+        update: {},
+        create: {
+            employeeId: 'EMP-002',
+            firstName: 'Mike',
+            lastName: 'Tech',
+            gender: 'MALE',
+            dateOfBirth: new Date('1985-01-01'),
+            joinDate: new Date('2021-01-01'),
+            status: 'ACTIVE',
+            department: { connect: { id: itDept.id } },
+            designation: { connect: { id: 'seed-desig-se' } },
+            reportsTo: { connect: { id: ceo.id } },
+        }
+    });
+
+    await prisma.employee.upsert({
+        where: { employeeId: 'EMP-003' },
+        update: {},
+        create: {
+            employeeId: 'EMP-003',
+            firstName: 'John',
+            lastName: 'Dev',
+            gender: 'MALE',
+            dateOfBirth: new Date('1995-01-01'),
+            joinDate: new Date('2023-01-01'),
+            status: 'PROBATION',
+            department: { connect: { id: itDept.id } },
+            designation: { connect: { id: 'seed-desig-se' } },
+            reportsTo: { connect: { id: cto.id } },
+        }
+    });
+
+    // ── 5. USERS ─────────────────────────────────────────────────────────────
+    console.log('🔑 Seeding platform users...');
     const superAdminHash = await argon2.hash('Password123!');
     const hrAdminHash = await argon2.hash('Password123!');
 
     await prisma.user.upsert({
-        where: { email: 'superadmin@demo.com' },
-        update: { roleId: superAdminRole.id },
+        where: { email: 'shenal@connexcodeworks.biz' },
+        update: { 
+            roleId: superAdminRole.id,
+            employeeId: ceo.id 
+        },
         create: {
-            email: 'superadmin@demo.com',
+            email: 'shenal@connexcodeworks.biz',
             name: 'Master SuperAdmin',
             passwordHash: superAdminHash,
             roleId: superAdminRole.id,
+            employeeId: ceo.id,
         },
     });
 
     await prisma.user.upsert({
         where: { email: 'hradmin@demo.com' },
-        update: { roleId: hrAdminRole.id },
+        update: { 
+            roleId: hrAdminRole.id,
+            employeeId: cto.id
+        },
         create: {
             email: 'hradmin@demo.com',
             name: 'HR Administrator',
             passwordHash: hrAdminHash,
             roleId: hrAdminRole.id,
+            employeeId: cto.id,
         },
     });
 
-    console.log('✅ Demo users created');
+    console.log('✅ Demo users & HR hierarchy created');
     console.log('');
     console.log('🎉 Seed complete! Credentials:');
-    console.log('   superadmin@demo.com  /  Password123!  (SuperAdmin)');
+    console.log('   shenal@connexcodeworks.biz  /  Password123!  (SuperAdmin)');
     console.log('   hradmin@demo.com     /  Password123!  (HR Admin)');
 }
 

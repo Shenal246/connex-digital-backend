@@ -36,12 +36,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.adminResetPassword = exports.getEffectivePermissions = exports.getSystemModules = exports.deletePermission = exports.registerPermission = exports.deleteResource = exports.registerResource = exports.deleteSystemModule = exports.updateSystemModule = exports.registerSystemModule = exports.getAllPermissions = exports.deleteUser = exports.updateUser = exports.createUser = exports.getUsers = exports.updateRolePermissions = exports.deleteRole = exports.updateRole = exports.createRole = exports.getRoles = void 0;
+exports.adminResetPassword = exports.getEffectivePermissions = exports.getSystemModules = exports.deletePermission = exports.registerPermission = exports.deleteResource = exports.updateResource = exports.registerResource = exports.deleteSystemModule = exports.updateSystemModule = exports.registerSystemModule = exports.getAllPermissions = exports.deleteUser = exports.updateUser = exports.createUser = exports.getUsers = exports.updateRolePermissions = exports.deleteRole = exports.updateRole = exports.createRole = exports.getRoles = void 0;
 const db_1 = require("../common/utils/db");
 const zod_1 = require("zod");
 const argon2 = __importStar(require("argon2"));
 const node_crypto_1 = __importDefault(require("node:crypto"));
 const errorHandler_1 = require("../common/middlewares/errorHandler");
+const emailService_1 = require("../common/utils/emailService");
+const logger_1 = require("../common/utils/logger");
 // Schemas
 const createRoleSchema = zod_1.z.object({
     name: zod_1.z.string().min(2),
@@ -53,14 +55,22 @@ const updateRoleSchema = zod_1.z.object({
 });
 const createUserSchema = zod_1.z.object({
     email: zod_1.z.string().email(),
-    password: zod_1.z.string().min(8).optional(),
-    name: zod_1.z.string().optional(),
-    roleId: zod_1.z.string().optional(),
+    password: zod_1.z.string()
+        .min(8)
+        .optional()
+        .or(zod_1.z.literal(''))
+        .transform(v => v === '' ? undefined : v),
+    name: zod_1.z.string().optional().transform(v => v === '' ? undefined : v),
+    roleId: zod_1.z.string().optional().transform(v => v === '' ? undefined : v),
+    employeeId: zod_1.z.string().optional().transform(v => v === '' ? undefined : v),
+    isActive: zod_1.z.boolean().optional(),
 });
 const updateUserSchema = zod_1.z.object({
     email: zod_1.z.string().email().optional(),
-    name: zod_1.z.string().optional(),
-    roleId: zod_1.z.string().optional(),
+    name: zod_1.z.string().optional().transform(v => v === '' ? undefined : v),
+    roleId: zod_1.z.string().optional().transform(v => v === '' ? undefined : v),
+    employeeId: zod_1.z.string().optional().transform(v => v === '' ? undefined : v),
+    isActive: zod_1.z.boolean().optional(),
 });
 const updateRolePermissionsSchema = zod_1.z.object({
     permissionIds: zod_1.z.array(zod_1.z.string()),
@@ -76,6 +86,11 @@ const registerResourceSchema = zod_1.z.object({
     moduleKey: zod_1.z.string(),
     name: zod_1.z.string().min(2),
     key: zod_1.z.string().min(2),
+});
+const updateResourceSchema = zod_1.z.object({
+    name: zod_1.z.string().min(2).optional(),
+    key: zod_1.z.string().min(2).optional(),
+    moduleKey: zod_1.z.string().optional(),
 });
 const registerPermissionSchema = zod_1.z.object({
     moduleKey: zod_1.z.string(),
@@ -186,7 +201,7 @@ exports.updateRolePermissions = updateRolePermissions;
 const getUsers = async (req, res, next) => {
     try {
         const users = await db_1.prisma.user.findMany({
-            include: { role: true },
+            include: { role: true, employee: true },
             orderBy: { createdAt: 'desc' },
         });
         res.json({ success: true, data: users });
@@ -198,7 +213,7 @@ const getUsers = async (req, res, next) => {
 exports.getUsers = getUsers;
 const createUser = async (req, res, next) => {
     try {
-        const { email, password, name, roleId } = createUserSchema.parse(req.body);
+        const { email, password, name, roleId, isActive, employeeId } = createUserSchema.parse(req.body);
         let finalPassword = password;
         let mustChangePassword = false;
         if (!finalPassword) {
@@ -207,20 +222,23 @@ const createUser = async (req, res, next) => {
             mustChangePassword = true;
         }
         const passwordHash = await argon2.hash(finalPassword);
-        const user = await db_1.prisma.user.create({
-            data: {
-                email,
-                name,
-                passwordHash,
-                roleId,
-                mustChangePassword,
-            },
-            include: { role: true },
+        const user = await db_1.prisma.$transaction(async (tx) => {
+            const newUser = await tx.user.create({
+                data: {
+                    email,
+                    name,
+                    passwordHash,
+                    roleId,
+                    mustChangePassword,
+                    isActive: isActive !== undefined ? isActive : true,
+                    employeeId: employeeId || null,
+                },
+                include: { role: true, employee: true },
+            });
+            return newUser;
         });
         if (mustChangePassword) {
-            Promise.resolve().then(() => __importStar(require('../common/utils/emailService'))).then(({ emailService }) => {
-                emailService.sendWelcomeEmail(user.email, finalPassword);
-            }).catch(console.error);
+            emailService_1.emailService.sendWelcomeEmail(user.email, user.name || 'User', finalPassword).catch(err => logger_1.logger.error(err, 'Failed to send welcome email'));
         }
         res.status(201).json({ success: true, data: user });
     }
@@ -232,15 +250,20 @@ exports.createUser = createUser;
 const updateUser = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { email, name, roleId } = updateUserSchema.parse(req.body);
-        const user = await db_1.prisma.user.update({
-            where: { id: id },
-            data: {
-                email,
-                name,
-                roleId,
-            },
-            include: { role: true },
+        const { email, name, roleId, isActive, employeeId } = updateUserSchema.parse(req.body);
+        const user = await db_1.prisma.$transaction(async (tx) => {
+            const updatedUser = await tx.user.update({
+                where: { id: id },
+                data: {
+                    email,
+                    name,
+                    roleId,
+                    isActive,
+                    employeeId: employeeId !== undefined ? (employeeId || null) : undefined,
+                },
+                include: { role: true, employee: true },
+            });
+            return updatedUser;
         });
         res.json({ success: true, data: user });
     }
@@ -346,6 +369,32 @@ const registerResource = async (req, res, next) => {
     }
 };
 exports.registerResource = registerResource;
+const updateResource = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const data = updateResourceSchema.parse(req.body);
+        let moduleId;
+        if (data.moduleKey) {
+            const module = await db_1.prisma.systemModule.findUnique({ where: { key: data.moduleKey } });
+            if (!module)
+                return res.status(404).json({ success: false, error: 'Module not found' });
+            moduleId = module.id;
+        }
+        const resource = await db_1.prisma.resource.update({
+            where: { id: id },
+            data: {
+                name: data.name,
+                key: data.key,
+                moduleId: moduleId,
+            },
+        });
+        res.json({ success: true, data: resource });
+    }
+    catch (err) {
+        next(err);
+    }
+};
+exports.updateResource = updateResource;
 const deleteResource = async (req, res, next) => {
     try {
         const { id } = req.params;
